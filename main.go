@@ -113,10 +113,10 @@ func printMetricsSummary() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Tipos y Funciones Comunes (Tareas 3 y 4)
+// Producto y generación de productos
 ////////////////////////////////////////////////////////////////////////////////
 
-// Producto representa un producto con ID único, tiempo de llegada y (para RR) tiempo restante.
+// Producto representa un producto con un identificador único, tiempo de llegada y (para RR) tiempo restante.
 type Producto struct {
 	ID            int
 	TiempoLlegada time.Time
@@ -124,7 +124,6 @@ type Producto struct {
 }
 
 // generarProductos simula la generación de productos con retraso aleatorio y los envía a un canal.
-// Cumple con la Tarea 3.
 func generarProductos(numProductos int, out chan<- Producto) {
 	for i := 1; i <= numProductos; i++ {
 		delay := time.Duration(rand.Intn(3)+1) * time.Second
@@ -142,45 +141,25 @@ func generarProductos(numProductos int, out chan<- Producto) {
 	close(out)
 }
 
-// Estacion utiliza un mutex para garantizar que se procese solo un producto a la vez.
-// Cumple con la Tarea 4.
-type Estacion struct {
-	ID    int
-	Mutex sync.Mutex
-}
-
-// ProcesarProducto procesa el producto usando exclusión mutua (Tareas 3 y 4 originales).
-func (e *Estacion) ProcesarProducto(p Producto, wg *sync.WaitGroup) {
-	defer wg.Done()
-	e.Mutex.Lock()
-	entry := time.Now()
-	fmt.Printf("[%s] Producto #%d (llegó: %s) entrando en Estación #%d [ORIGINAL]\n",
-		entry.Format("15:04:05"), p.ID, p.TiempoLlegada.Format("15:04:05"), e.ID)
-	// Se simula un tiempo fijo de procesamiento (10 segundos)
-	time.Sleep(10 * time.Second)
-	exit := time.Now()
-	fmt.Printf("[%s] Producto #%d ha sido procesado en Estación #%d [ORIGINAL]\n",
-		exit.Format("15:04:05"), p.ID, e.ID)
-	e.Mutex.Unlock()
-	addStationRecord(p.ID, e.ID, entry, exit)
-}
-
 ////////////////////////////////////////////////////////////////////////////////
-// Implementación de Comunicación IPC y Scheduling (Tareas 1 y 2)
+// Implementación de Comunicación IPC y Scheduling
 ////////////////////////////////////////////////////////////////////////////////
 
 // EstacionIPC representa una estación de trabajo comunicada mediante canales.
+// Se agrega un campo Mutex para asegurar que solo se procese un producto a la vez en la estación.
 type EstacionIPC struct {
 	ID       int
 	Duracion time.Duration  // Tiempo total de procesamiento para la estación.
 	In       <-chan Producto // Canal de entrada.
 	Out      chan<- Producto // Canal de salida; nil en la última estación.
+	Mutex    sync.Mutex      // Mutex para sincronizar el procesamiento.
 }
 
-// TrabajarFCFS procesa productos en modo FCFS (FIFO) sin interrupción.
+// TrabajarFCFS procesa productos en modo FCFS (FIFO) sin interrupción, utilizando un Mutex.
 func (e *EstacionIPC) TrabajarFCFS(wg *sync.WaitGroup) {
 	defer wg.Done()
 	for p := range e.In {
+		e.Mutex.Lock()
 		entry := time.Now()
 		fmt.Printf("[%s] EstaciónIPC #%d (FCFS): Inicia procesamiento del Producto #%d (llegó: %s)\n",
 			entry.Format("15:04:05"), e.ID, p.ID, p.TiempoLlegada.Format("15:04:05"))
@@ -189,6 +168,8 @@ func (e *EstacionIPC) TrabajarFCFS(wg *sync.WaitGroup) {
 		fmt.Printf("[%s] EstaciónIPC #%d (FCFS): Finaliza procesamiento del Producto #%d\n",
 			exit.Format("15:04:05"), e.ID, p.ID)
 		addStationRecord(p.ID, e.ID, entry, exit)
+		e.Mutex.Unlock()
+
 		if e.Out != nil {
 			e.Out <- p
 		} else {
@@ -201,8 +182,8 @@ func (e *EstacionIPC) TrabajarFCFS(wg *sync.WaitGroup) {
 	}
 }
 
-// TrabajarRR procesa productos en modo Round Robin con un quantum configurable.
-// Si un producto no finaliza en el quantum, se reinserta en la cola para continuar su procesamiento.
+// TrabajarRR procesa productos en modo Round Robin con un quantum configurable,
+// utilizando un Mutex para sincronizar cada ciclo de procesamiento.
 func (e *EstacionIPC) TrabajarRR(wg *sync.WaitGroup, quantum time.Duration, expected int) {
 	defer wg.Done()
 	var rrQueue []Producto
@@ -247,23 +228,26 @@ func (e *EstacionIPC) TrabajarRR(wg *sync.WaitGroup, quantum time.Duration, expe
 		if p.RemainingTime == 0 {
 			p.RemainingTime = e.Duracion
 		}
+		e.Mutex.Lock()
 		entry := time.Now()
 		if p.RemainingTime > quantum {
 			fmt.Printf("[%s] EstaciónIPC #%d (RR): Procesando Producto #%d por quantum %v, tiempo restante %v\n",
-				time.Now().Format("15:04:05"), e.ID, p.ID, quantum, p.RemainingTime)
+				entry.Format("15:04:05"), e.ID, p.ID, quantum, p.RemainingTime)
 			time.Sleep(quantum)
 			p.RemainingTime -= quantum
 			exit := time.Now()
 			addStationRecord(p.ID, e.ID, entry, exit)
+			e.Mutex.Unlock()
 			rrQueue = append(rrQueue, p)
 		} else {
 			fmt.Printf("[%s] EstaciónIPC #%d (RR): Procesando Producto #%d por tiempo restante %v (finalizando)\n",
-				time.Now().Format("15:04:05"), e.ID, p.ID, p.RemainingTime)
+				entry.Format("15:04:05"), e.ID, p.ID, p.RemainingTime)
 			time.Sleep(p.RemainingTime)
 			exit := time.Now()
 			addStationRecord(p.ID, e.ID, entry, exit)
 			p.RemainingTime = 0
 			finished++
+			e.Mutex.Unlock()
 			if e.Out != nil {
 				e.Out <- p
 			} else {
@@ -281,11 +265,11 @@ func (e *EstacionIPC) TrabajarRR(wg *sync.WaitGroup, quantum time.Duration, expe
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Función simulate: Ejecuta la simulación según el modo seleccionado.
+// Función simulate: Ejecuta la simulación para algoritmos FCFS o Round Robin.
 ////////////////////////////////////////////////////////////////////////////////
 
 func simulate(schedulingMode string) {
-	// Reinicia las métricas para cada simulación
+	// Reinicia las métricas para cada simulación.
 	metricsMutex.Lock()
 	metricsMap = make(map[int]*ProductMetric)
 	metricsMutex.Unlock()
@@ -293,87 +277,65 @@ func simulate(schedulingMode string) {
 	numEstaciones := 3
 	numProductos := 10
 
-	if schedulingMode == "original" {
-		// Modo ORIGINAL: Se usa la generación de productos y procesamiento con mutex.
-		estaciones := make([]*Estacion, numEstaciones)
-		for i := 0; i < numEstaciones; i++ {
-			estaciones[i] = &Estacion{ID: i + 1}
-		}
-		productQueue := make(chan Producto, numProductos)
-		var wg sync.WaitGroup
-		go generarProductos(numProductos, productQueue)
-		for producto := range productQueue {
-			wg.Add(1)
-			// Asigna de forma cíclica el producto a una estación.
-			estacion := estaciones[(producto.ID-1)%numEstaciones]
-			go estacion.ProcesarProducto(producto, &wg)
-		}
-		wg.Wait()
-		fmt.Println("Todos los productos han sido procesados correctamente [ORIGINAL].")
-	} else if schedulingMode == "fcfs" || schedulingMode == "rr" {
-		// Modo IPC: Se crean canales para conectar las estaciones.
-		canal1 := make(chan Producto, numProductos)
-		canal2 := make(chan Producto, numProductos)
-		canal3 := make(chan Producto, numProductos)
-		var wg sync.WaitGroup
-		wg.Add(3) // Tres estaciones
+	// Se crean canales para conectar las tres estaciones.
+	canal1 := make(chan Producto, numProductos)
+	canal2 := make(chan Producto, numProductos)
+	canal3 := make(chan Producto, numProductos)
+	var wg sync.WaitGroup
+	wg.Add(numEstaciones) // Se usa la variable numEstaciones en lugar de "3"
 
-		estacion1 := EstacionIPC{
-			ID:       1,
-			Duracion: 3 * time.Second,
-			In:       canal1,
-			Out:      canal2,
-		}
-		estacion2 := EstacionIPC{
-			ID:       2,
-			Duracion: 4 * time.Second,
-			In:       canal2,
-			Out:      canal3,
-		}
-		estacion3 := EstacionIPC{
-			ID:       3,
-			Duracion: 5 * time.Second,
-			In:       canal3,
-			Out:      nil, // Última estación
-		}
-
-		if schedulingMode == "fcfs" {
-			go estacion1.TrabajarFCFS(&wg)
-			go estacion2.TrabajarFCFS(&wg)
-			go estacion3.TrabajarFCFS(&wg)
-		} else { // "rr"
-			// Se solicita al usuario el quantum para RR
-			fmt.Print("Ingrese el quantum (en segundos) para Round Robin: ")
-			reader := bufio.NewReader(os.Stdin)
-			input, err := reader.ReadString('\n')
-			if err != nil {
-				fmt.Println("Error leyendo el quantum. Se usará el valor por defecto (2 segundos).")
-				input = "2"
-			}
-			input = strings.TrimSpace(input)
-			quantumSec, err := strconv.Atoi(input)
-			if err != nil || quantumSec <= 0 {
-				fmt.Println("Valor inválido. Se usará el valor por defecto (2 segundos).")
-				quantumSec = 2
-			}
-			quantum := time.Duration(quantumSec) * time.Second
-
-			go estacion1.TrabajarRR(&wg, quantum, numProductos)
-			go estacion2.TrabajarRR(&wg, quantum, numProductos)
-			go estacion3.TrabajarRR(&wg, quantum, numProductos)
-		}
-		go generarProductos(numProductos, canal1)
-		wg.Wait()
-		fmt.Printf("Todos los productos han sido procesados correctamente [%s].\n", schedulingMode)
-	} else {
-		fmt.Println("Modo de scheduling desconocido.")
-		return
+	estacion1 := EstacionIPC{
+		ID:       1,
+		Duracion: 3 * time.Second,
+		In:       canal1,
+		Out:      canal2,
 	}
+	estacion2 := EstacionIPC{
+		ID:       2,
+		Duracion: 4 * time.Second,
+		In:       canal2,
+		Out:      canal3,
+	}
+	estacion3 := EstacionIPC{
+		ID:       3,
+		Duracion: 5 * time.Second,
+		In:       canal3,
+		Out:      nil, // Última estación
+	}
+
+	if schedulingMode == "fcfs" {
+		go estacion1.TrabajarFCFS(&wg)
+		go estacion2.TrabajarFCFS(&wg)
+		go estacion3.TrabajarFCFS(&wg)
+	} else { // schedulingMode == "rr"
+		fmt.Print("Ingrese el quantum (en segundos) para Round Robin: ")
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error leyendo el quantum. Se usará el valor por defecto (2 segundos).")
+			input = "2"
+		}
+		input = strings.TrimSpace(input)
+		quantumSec, err := strconv.Atoi(input)
+		if err != nil || quantumSec <= 0 {
+			fmt.Println("Valor inválido. Se usará el valor por defecto (2 segundos).")
+			quantumSec = 2
+		}
+		quantum := time.Duration(quantumSec) * time.Second
+
+		go estacion1.TrabajarRR(&wg, quantum, numProductos)
+		go estacion2.TrabajarRR(&wg, quantum, numProductos)
+		go estacion3.TrabajarRR(&wg, quantum, numProductos)
+	}
+	// Se inicia la generación de productos, enviándolos al primer canal.
+	go generarProductos(numProductos, canal1)
+	wg.Wait()
+	fmt.Printf("Todos los productos han sido procesados correctamente [%s].\n", schedulingMode)
 	printMetricsSummary()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Función Main: Menú Interactivo
+// Función Main: Menú Interactivo (Sólo FCFS y Round Robin)
 ////////////////////////////////////////////////////////////////////////////////
 
 func main() {
@@ -383,26 +345,24 @@ func main() {
 	for {
 		fmt.Println("\n======================================")
 		fmt.Println("Seleccione el modo de ejecución:")
-		fmt.Println("1. Original (Sincronización con Mutexes)")
-		fmt.Println("2. FCFS (Pipeline con IPC en modo FCFS)")
-		fmt.Println("3. Round Robin (Pipeline con IPC en modo RR)")
-		fmt.Println("4. Salir")
-		fmt.Print("Ingrese opción (1-4): ")
+		fmt.Println("1. FCFS (Pipeline con IPC en modo FCFS)")
+		fmt.Println("2. Round Robin (Pipeline con IPC en modo RR)")
+		fmt.Println("3. Salir")
+		fmt.Print("Ingrese opción (1-3): ")
 
 		choiceStr, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println("Error leyendo la entrada. Intente de nuevo.")
 			continue
 		}
+
 		var schedulingMode string
 		switch choiceStr[0] {
 		case '1':
-			schedulingMode = "original"
-		case '2':
 			schedulingMode = "fcfs"
-		case '3':
+		case '2':
 			schedulingMode = "rr"
-		case '4':
+		case '3':
 			fmt.Println("Saliendo del programa.")
 			return
 		default:
