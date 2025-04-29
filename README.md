@@ -3,6 +3,11 @@
 Este proyecto implementa un simulador de una línea de ensamblaje de productos en la que se utilizan mecanismos de comunicación entre procesos (IPC), junto con técnicas de sincronización (mutexes) para garantizar que sólo se procese un producto a la vez en cada estación. Se implementan dos algoritmos de scheduling: FCFS (First Come, First Serve) y Round Robin, siendo este último configurable en cuanto a su quantum.
 
 ---
+### Miembros del grupo:
+- Priscilla Jimenez Salgado
+- Katerine Guzmán Flores
+- Esteban Solano Araya
+---
 
 ## 1. Instrucciones de Ejecución
 
